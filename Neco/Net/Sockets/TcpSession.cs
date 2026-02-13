@@ -1,0 +1,252 @@
+﻿using System.Net;
+using System.Net.Sockets;
+
+namespace Neco.Net.Sockets;
+
+public interface ITcpSessionHandler
+{
+    public void OnDisconnected(EndPoint endPoint);
+    public int OnReceive(ArraySegment<byte> buff);
+    public void OnSend(int numOfBytes);
+}
+
+public class TcpSession
+{
+    private Socket _socket = null!;
+
+    private SocketAsyncEventArgs _recvArgs = null!;
+    private SocketAsyncEventArgs _sendArgs = null!;
+
+    private readonly RecvBuffer _recvBuffer = new(32768);
+    private readonly SendBuffer _sendBuffer = new();
+
+    private ITcpSessionHandler _handler = null!;
+
+    private int _disconnected;
+    private int _sending;
+    private string _remote = "";
+
+    private bool IsDisconnected => Volatile.Read(ref _disconnected) == 1;
+    private void ResetSendingFlag() => Volatile.Write(ref _sending, 0);
+
+    public string Remote => _remote;
+
+    public void Initialize(Socket socket, ITcpSessionHandler handler)
+    {
+        Volatile.Write(ref _disconnected, 0);
+        ResetSendingFlag();
+
+        _socket = socket;
+        _remote = socket.RemoteEndPoint?.ToString() ?? "unknown";
+
+        _recvBuffer.Reset();
+        _sendBuffer.Clear();
+
+        _handler = handler;
+
+        _sendArgs = new SocketAsyncEventArgs();
+        _sendArgs.Completed += OnSendCompleted;
+
+        _recvArgs = new SocketAsyncEventArgs();
+        _recvArgs.Completed += OnReceiveCompleted;
+
+        Receive();
+    }
+
+    public void Disconnect()
+    {
+        if (Interlocked.Exchange(ref _disconnected, 1) == 1)
+            return;
+
+        var endPoint = _socket.RemoteEndPoint;
+
+        _sendBuffer.Clear();
+        ResetSendingFlag();
+
+        try { _socket.Shutdown(SocketShutdown.Both); } catch { }
+        try { _socket.Close(); } catch { }
+
+        try
+        {
+            _recvArgs.Completed -= OnReceiveCompleted;
+            _recvArgs.Dispose();
+        }
+        catch { }
+
+        try { _sendArgs.BufferList = null; } catch { }
+        try
+        {
+            _sendArgs.Completed -= OnSendCompleted;
+            _sendArgs.Dispose();
+        }
+        catch { }
+
+
+        var handler = _handler;
+        handler?.OnDisconnected(endPoint!);
+    }
+
+    private void Receive()
+    {
+        if (IsDisconnected) return;
+
+        // Note: Clean()으로 처리할 지 EnsureFree()로 처리할지 고민
+        //_recvBuffer.Clean();
+
+        // Note: MaxPacketSize 사이즈가 있다면 좋겠다.
+        if (!_recvBuffer.EnsureFree(1))
+        {
+            Disconnect();
+            return;
+        }
+       
+        var segment = _recvBuffer.WriteSegment;
+        _recvArgs.SetBuffer(segment.Array, segment.Offset, segment.Count);
+
+        try
+        {
+            var pending = _socket.ReceiveAsync(_recvArgs);
+            if (!pending)
+            {
+                OnReceiveCompleted(null, _recvArgs);
+            }
+        }
+        catch (ObjectDisposedException)
+        {            
+        }
+        catch (SocketException)
+        {
+            Disconnect();
+        }
+    }
+
+    private void OnReceiveCompleted(object? _, SocketAsyncEventArgs e)
+    {
+        if (IsDisconnected)
+            return;
+
+        if (e.SocketError != SocketError.Success || e.BytesTransferred < 1)
+        {
+            Disconnect();
+            return;
+        }
+
+        try
+        {
+            if (!_recvBuffer.OnWrite(e.BytesTransferred))
+            {
+                Disconnect();
+                return;
+            }
+
+            var processLen = _handler.OnReceive(_recvBuffer.ReadSegment);
+            if (processLen < 0 || _recvBuffer.DataSize < processLen)
+            {
+                Disconnect();
+                return;
+            }
+
+            if (!_recvBuffer.OnRead(processLen))
+            {
+                Disconnect();
+                return;
+            }
+        }
+        catch (Exception)
+        {
+            Disconnect();
+            return;
+        }
+
+        Receive();
+    }
+
+    public void Write(byte[] data) => Write(data.AsSpan());
+
+    public void Write(ReadOnlySpan<byte> data)
+    {
+        if (IsDisconnected) return;
+
+        _sendBuffer.Enqueue(data);
+
+        if (Interlocked.CompareExchange(ref _sending, 1, 0) == 0)
+        {
+            Send();
+        }
+    }
+
+    private void Send()
+    {
+        while (true)
+        {
+            if (IsDisconnected)
+            {
+                ResetSendingFlag();
+                return;
+            }
+
+            _sendBuffer.BuildActiveIfEmpty();
+            if (!_sendBuffer.HasActive)
+            {
+                ResetSendingFlag();
+
+                if (!IsDisconnected && Interlocked.CompareExchange(ref _sending, 1, 0) == 0)
+                    continue;
+
+                return;
+            }                        
+
+            try
+            {
+                _sendArgs.BufferList = _sendBuffer.ActiveSegments;
+
+                bool pending = _socket.SendAsync(_sendArgs);
+                if (pending)
+                    return;
+
+                if (_sendArgs.SocketError != SocketError.Success)
+                {
+                    Disconnect();
+                    return;
+                }
+
+                _sendArgs.BufferList = null;
+                _sendBuffer.Complete(_sendArgs.BytesTransferred);
+                continue;
+            }
+            catch (ObjectDisposedException)
+            {
+                ResetSendingFlag();
+                return;
+            }
+            catch (SocketException)
+            {
+                Disconnect();
+                return;
+            }
+        }
+    }
+
+    private void OnSendCompleted(object? sender, SocketAsyncEventArgs e)
+    {
+        if (IsDisconnected)
+        {
+            ResetSendingFlag();
+            return;
+        }
+
+        if (e.SocketError != SocketError.Success)
+        {
+            Disconnect();
+            return;
+        }
+
+        _sendArgs.BufferList = null;
+
+        _sendBuffer.Complete(e.BytesTransferred);
+
+        _handler.OnSend(e.BytesTransferred);
+
+        Send();
+    }
+}

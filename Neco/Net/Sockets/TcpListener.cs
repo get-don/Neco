@@ -34,7 +34,6 @@ public sealed class TcpListener : IAsyncDisposable
         var listen = _listenSocket ?? throw new InvalidOperationException("Call Initialize() first.");
         var handler = OnAcceptAsync ?? throw new InvalidOperationException("OnAcceptAsync must be set before calling RunAsync.");
 
-
         var consecutiveErrors = 0;
 
         while (!ct.IsCancellationRequested && !IsStopping)

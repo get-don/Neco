@@ -1,12 +1,8 @@
-﻿using System;
-using System.Buffers;
+﻿using System.Buffers;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace Neco.Net.Sockets;
+
 internal class SendBuffer
 {
     private readonly struct Item
@@ -79,7 +75,12 @@ internal class SendBuffer
         if (!HasActive)
             return;
 
-        if (bytesSent < ActiveTotalBytes)
+        if ((uint)bytesSent > (uint)_activeTotalBytes)
+        {
+            throw new InvalidOperationException("bytesSent exceeds active bytes.");
+        }
+
+        if (bytesSent < _activeTotalBytes)
         {
             AdvanceBy(bytesSent);
             _activeTotalBytes -= bytesSent;
@@ -131,7 +132,8 @@ internal class SendBuffer
                 continue;
             }
 
-            _activeSegments[i] = new ArraySegment<byte>(segment.Array!, segment.Offset + bytesSent, segment.Count - bytesSent);            
+            _activeSegments[i] = new ArraySegment<byte>(segment.Array!, segment.Offset + bytesSent, segment.Count - bytesSent);
+            bytesSent = 0;
             break;
         }
                 

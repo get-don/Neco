@@ -37,6 +37,15 @@ internal sealed class RecvBuffer
     }
 
     /// <summary>
+    /// 읽기, 쓰기 포인터 초기화
+    /// </summary>
+    public void Reset()
+    {
+        _readPos = 0;
+        _writePos = 0;
+    }
+
+    /// <summary>
     /// size 만큼의 여유 공간이 있으면 true, 공간이 없으면 버퍼 정리 후 재확인.
     /// </summary>
     public bool EnsureFree(int size)
@@ -110,7 +119,7 @@ internal sealed class RecvBuffer
             return false;
         }
 
-        span = s;
+        span = s[..size];
         return true;
     }
 
@@ -140,7 +149,7 @@ internal sealed class RecvBuffer
 
     public bool TryPeekUInt32LE(out uint value)
     {
-        if (!TryPeek(2, out var span))
+        if (!TryPeek(4, out var span))
         {
             value = 0;
             return false;
@@ -152,7 +161,7 @@ internal sealed class RecvBuffer
 
     public bool TryPeekInt32LE(out int value)
     {
-        if (!TryPeek(2, out var span))
+        if (!TryPeek(4, out var span))
         {
             value = 0;
             return false;
