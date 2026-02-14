@@ -3,7 +3,7 @@ using System.Net.Sockets;
 
 namespace Neco.Net.Sockets;
 
-public sealed class TcpListener : IAsyncDisposable
+public sealed class NecoTcpListener : IAsyncDisposable
 {
     public Func<Socket, Task>? OnAcceptAsync;
 

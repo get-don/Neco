@@ -3,7 +3,7 @@ using System.Net.Sockets;
 
 namespace Neco.Net.Sockets;
 
-public sealed class TcpConnector
+public sealed class NecoTcpConnector
 {
     public static async Task<Socket> ConnectAsync(IPEndPoint remoteEndPoint, CancellationToken ct)
     {

@@ -3,14 +3,7 @@ using System.Net.Sockets;
 
 namespace Neco.Net.Sockets;
 
-public interface ITcpSessionHandler
-{
-    public void OnDisconnected(EndPoint endPoint);
-    public int OnReceive(ArraySegment<byte> buff);
-    public void OnSend(int numOfBytes);
-}
-
-public class TcpSession
+public abstract class NecoTcpSession
 {
     private Socket _socket = null!;
 
@@ -19,8 +12,6 @@ public class TcpSession
 
     private readonly RecvBuffer _recvBuffer = new(32768);
     private readonly SendBuffer _sendBuffer = new();
-
-    private ITcpSessionHandler _handler = null!;
 
     private int _disconnected;
     private int _sending;
@@ -31,7 +22,26 @@ public class TcpSession
 
     public string Remote => _remote;
 
-    public void Initialize(Socket socket, ITcpSessionHandler handler)
+    /// <summary>
+    /// param: 수신한 데이터,
+    /// result:
+    /// 음수: 오류,
+    /// 0: 데이터 처리 안함,
+    /// 양수: 처리한 데이터 크기
+    /// </summary>
+    public abstract int OnReceive(ArraySegment<byte> buff);
+
+    /// <summary>
+    /// param: 송신한 데이터 크기
+    /// </summary>
+    public abstract void OnSend(int numOfBytes);
+
+    /// <summary>
+    /// param: 리모트 EndPoint
+    /// </summary>
+    public abstract void OnDisconnect(EndPoint endPoint);
+
+    public void Initialize(Socket socket)
     {
         Volatile.Write(ref _disconnected, 0);
         ResetSendingFlag();
@@ -41,8 +51,6 @@ public class TcpSession
 
         _recvBuffer.Reset();
         _sendBuffer.Clear();
-
-        _handler = handler;
 
         _sendArgs = new SocketAsyncEventArgs();
         _sendArgs.Completed += OnSendCompleted;
@@ -82,8 +90,7 @@ public class TcpSession
         catch { }
 
 
-        var handler = _handler;
-        handler?.OnDisconnected(endPoint!);
+        OnDisconnect(endPoint!);
     }
 
     private void Receive()
@@ -139,7 +146,7 @@ public class TcpSession
                 return;
             }
 
-            var processLen = _handler.OnReceive(_recvBuffer.ReadSegment);
+            var processLen = OnReceive(_recvBuffer.ReadSegment);
             if (processLen < 0 || _recvBuffer.DataSize < processLen)
             {
                 Disconnect();
@@ -152,8 +159,9 @@ public class TcpSession
                 return;
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            Console.WriteLine(ex);
             Disconnect();
             return;
         }
@@ -189,10 +197,6 @@ public class TcpSession
             if (!_sendBuffer.HasActive)
             {
                 ResetSendingFlag();
-
-                if (!IsDisconnected && Interlocked.CompareExchange(ref _sending, 1, 0) == 0)
-                    continue;
-
                 return;
             }                        
 
@@ -212,6 +216,7 @@ public class TcpSession
 
                 _sendArgs.BufferList = null;
                 _sendBuffer.Complete(_sendArgs.BytesTransferred);
+                OnSend(_sendArgs.BytesTransferred);
                 continue;
             }
             catch (ObjectDisposedException)
@@ -242,10 +247,8 @@ public class TcpSession
         }
 
         _sendArgs.BufferList = null;
-
         _sendBuffer.Complete(e.BytesTransferred);
-
-        _handler.OnSend(e.BytesTransferred);
+        OnSend(e.BytesTransferred);
 
         Send();
     }
